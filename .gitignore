@@ -1,0 +1,46 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+.venv/
+venv/
+ENV/
+env/
+.env
+.pytest_cache/
+.mypy_cache/
+.coverage
+*.egg-info/
+build/
+dist/
+
+# IDE
+.idea/
+.vscode/
+.DS_Store
+
+# Data and artifacts
+data/openFDA_drug_event/
+data/baseline/
+data/enrich/rxnav_cache.sqlite
+data/enrich/drugbank/
+data/processed/
+data/qa/
+data/release/
+data/test_run/
+data/logs/
+data/manifests/
+data/tools/chrome/
+
+# Secrets/credentials (DO NOT COMMIT)
+credentials/
+
+# Temporary
+*.tmp
+*.log
+*.rpm
+*.zip
+*.tar
+*.tar.*

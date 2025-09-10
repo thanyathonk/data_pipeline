@@ -1,0 +1,8 @@
+pandas>=2.1
+numpy>=1.25
+requests>=2.31
+tqdm>=4.66
+selenium>=4.20
+undetected-chromedriver>=3.5
+gdown>=5.2
+pydrive2>=1.17
