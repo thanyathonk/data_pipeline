@@ -50,3 +50,4 @@ vocab/
 *.parquet
 *.gz
 *.zip
+data/
