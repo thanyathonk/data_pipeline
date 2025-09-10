@@ -33,6 +33,7 @@ data/test_run/
 data/logs/
 data/manifests/
 data/tools/chrome/
+vocab/
 
 # Secrets/credentials (DO NOT COMMIT)
 credentials/
