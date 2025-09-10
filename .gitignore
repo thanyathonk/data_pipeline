@@ -45,3 +45,8 @@ credentials/
 *.zip
 *.tar
 *.tar.*
+vocab/
+*.csv
+*.parquet
+*.gz
+*.zip
