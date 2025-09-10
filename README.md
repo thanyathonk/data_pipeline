@@ -2,6 +2,9 @@
 
 โครงการนี้คือ pipeline สำหรับประมวลผลข้อมูลเหตุการณ์ไม่พึงประสงค์จากยา (FAERS/openFDA drug event) ตั้งแต่แปลงให้อยู่ในรูป Entity–Relationship (ER), enrich ด้วย RxNav/DrugBank, รวมผล, ตรวจสอบคุณภาพ (QA) และจัดแพ็กไฟล์สำหรับเผยแพร่ โดยมีสคริปต์ smoke test ครบชุด (Stage‑3 → Stage‑10) เพื่อช่วยยืนยันความถูกต้องของ flow บนชุดตัวอย่างขนาดเล็ก
 
+# Workflow
+![Image](./merge/version_1.1.png)
+
 ## โครงสร้างที่ใช้บ่อย
 - Stage‑2 สร้าง ER tables: `core/openFDA_Entity_Relationship_Tables_v2.py`
 - Smoke test (Stage‑3 → 10): `run_smoke_test.py`
@@ -73,6 +76,25 @@ python run_smoke_test.py --sample-size 50 --qps 4 --max-workers 8
 # (ปรับ run_smoke_test.py ให้ส่ง --demo หรือเรียก production_drugbank_scraper.py ด้วย --demo)
 ```
 
+## โอนถ่ายข้อมูล (Google Drive)
+- อัปโหลดขึ้น Google Drive: ใช้ `scripts/upload_to_gdrive.py` รองรับไฟล์ config เพื่อไม่ต้องพิมพ์คำสั่งยาว
+  - เตรียม Service Account และแชร์โฟลเดอร์ปลายทางให้กับอีเมลของ SA (สิทธิ์ Editor)
+  - ไฟล์ตัวอย่าง: `scripts/gdrive_upload.json`
+  - ใช้งาน:
+```bash
+# สร้างโฟลเดอร์ชั่วคราวสำหรับไฟล์ zip (ถ้าจำเป็น)
+mkdir -p /md0/thanyathon/tmp
+
+# อัปโหลดด้วยไฟล์ config (แก้ค่าใน scripts/gdrive_upload.json ตามต้องการ)
+python scripts/upload_to_gdrive.py --config scripts/gdrive_upload.json
+
+# หรือ override บางค่าเฉพาะตอนเรียก (เช่น เปลี่ยนชื่อไฟล์)
+python scripts/upload_to_gdrive.py --config scripts/gdrive_upload.json \
+  --name openFDA_drug_event_$(date +%Y%m%d_%H%M%S).zip
+```
+- ดาวน์โหลดชุดข้อมูล/ผลลัพธ์กลับมา: ใช้ `scripts/fetch_openfda_data.py` (รองรับ Google Drive ผ่าน gdown และ HTTP(S))
+  - ดูรายละเอียดและตัวอย่างเพิ่มเติมใน `scripts/README.md`
+
 ## Quick Start
 ```bash
 # 1) เตรียมสภาพแวดล้อม
@@ -93,4 +115,3 @@ python run_smoke_test.py --sample-size 50 --qps 4 --max-workers 8
 - เปิด Chrome ไม่ได้เพราะ GLIBC เก่า: ใช้ Selenium Remote หรือโหมด demo ชั่วคราว
 - ไม่มีเน็ตเรียก RxNav: ใช้ `RXNAV_OFFLINE=1` หรือ `--demo` ที่ `enrich/rxnav_enrich.py`
 - ต้องการกรองด้วยผล DrugBank ในไฟล์สุดท้าย: รัน `enrich/production_drugbank_scraper.py` เพื่อสร้าง `drugbank_results.csv` แล้วเรียก `stage4_merge_back.py` พร้อม `--drugbank ... --filter-drugbank`
-

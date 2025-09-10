@@ -27,6 +27,29 @@ python scripts/upload_to_gdrive.py \
   --credentials credentials/credentials.json
 ```
 
+- ใช้ไฟล์ตั้งค่า (ไม่ต้องพิมพ์พารามิเตอร์ยาวๆ)
+  - สร้างไฟล์ `scripts/gdrive_upload.json` เช่น:
+```json
+{
+  "src": "data/openFDA_drug_event",
+  "folder_id": "<GDRIVE_FOLDER_ID>",
+  "zip": true,
+  "name": "openFDA_drug_event_20250101_000000.zip",
+  "auth_mode": "service",
+  "service_account": "credentials/service_account.json",
+  "credentials": "credentials/credentials.json",
+  "token": "credentials/token.json"
+}
+```
+  - รันสั้นๆ ด้วย:
+```bash
+python scripts/upload_to_gdrive.py --config scripts/gdrive_upload.json
+```
+
+หมายเหตุ:
+- CLI ที่ส่งเข้ามาจะ override ค่าในไฟล์ config (ถ้าต้องการเปลี่ยนเฉพาะบางอัน)
+- หากต้องการควบคุมที่วางไฟล์ zip ให้ใช้ `zip_out`, เช่น `"zip_out": "/md0/tmp/openFDA.zip"`
+
 - อัปโหลดโฟลเดอร์แบบ zip ไฟล์เดียว (ต้องมีพื้นที่ว่างเพียงพอ)
 ```bash
 python scripts/upload_to_gdrive.py \
@@ -71,4 +94,3 @@ source .venv/bin/activate
 ## 4) ข้อควรระวัง
 - อย่า commit ไฟล์ลับใน `credentials/` ขึ้น Git
 - โฟลเดอร์ข้อมูล/ผลลัพธ์ขนาดใหญ่ถูกกันไว้ใน `.gitignore` แล้ว (เช่น `data/`, `data/test_runs/`, `data/release/`)
-
