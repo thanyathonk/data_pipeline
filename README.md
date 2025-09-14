@@ -1,141 +1,124 @@
-# FAERS Data Pipeline (openFDA → ER → Enrich → Merge → Release)
+# FAERS Data Pipeline (openFDA -> ER -> Enrich -> Merge -> Release)
 
-โครงการนี้คือ pipeline สำหรับประมวลผลข้อมูลเหตุการณ์ไม่พึงประสงค์จากยา (FAERS/openFDA drug event) ตั้งแต่แปลงให้อยู่ในรูป Entity–Relationship (ER), enrich ด้วย RxNav/DrugBank, รวมผล, ตรวจสอบคุณภาพ (QA) และจัดแพ็กไฟล์สำหรับเผยแพร่ โดยมีสคริปต์ pipeline validation test ครบชุด (Stage‑3 → Stage‑10) เพื่อช่วยยืนยันความถูกต้องของ flow บนชุดตัวอย่างขนาดเล็ก
+End-to-end pipeline for the FDA Adverse Event Reporting System (FAERS) built on openFDA drug event data. It converts raw JSON/CSV into Entity–Relationship (ER) tables, enriches with RxNav and optionally DrugBank, merges everything into an analysis-ready table, runs QA, and packages a release.
 
-# Workflow
+The pipeline can resume safely, skip stages with existing outputs, and provides offline/demo fallbacks for RxNav and the merge on low-resource environments.
+
+## Workflow
 ![Image](./merge/version_1.1.png)
 
-## โครงสร้างที่ใช้บ่อย
-- Stage‑2 สร้าง ER tables: `core/openFDA_Entity_Relationship_Tables_v2.py`
-- pipeline validation test (Stage‑3 → 10): `run_pipeline_validation.py`
-- Enrich ยา (RxNav): `enrich/rxnav_enrich.py`
-- Enrich ยา (DrugBank): `enrich/production_drugbank_scraper.py`
-- Split/Merge/QA/Release: `split/*.py`, `stage4_merge_back.py`, `stage5_split_cohorts.py`, `stage6_qa_checks.py`, `stage7_release_pack.py`
-- Utilities ทั่วไป: `merge/common_utils.py`
+Stages (as orchestrated by `run_pipeline.py`)
+- Stage 1: Parse raw openFDA into normalized CSV folders (`core/Parsing.py`) — optional if ER exists
+- Stage 2: Build ER tables from parsed folders (`core/openFDA_Entity_Relationship_Tables.py`)
+- Stage 3: Merge baseline across patient/report/serious/reporter (`core/merge_data_all_ages.py`)
+- Stage 4: Split dictionaries (ADR and Drug) (`split/split_adr.py`, `split/split_drug.py`)
+- Stage 5: ADR -> MedDRA PT/SOC (`enrich/ADR.py` + OMOP vocab)
+- Stage 6: Drug cleaning + RxNav mapping (`enrich/clean_drug.py`, `enrich/rxnav_enrich.py`)
+- Stage 7: Merge back to final pairs + coverage (`stage4_merge_back.py`)
+- Stage 8: Split cohorts by age (`stage5_split_cohorts.py`)
+- Stage 9: QA artifacts (`stage6_qa_checks.py`)
+- Stage 10: Package release (`stage7_release_pack.py`)
 
-## ข้อกำหนดและการเตรียมเครื่อง
-### 1) Python และ virtualenv
-- ใช้ Python 3.10 ขึ้นไป
-- สร้าง virtualenv และติดตั้ง dependencies
+## Repository Layout
+- ER/merge helpers: `core/*.py`, `merge/common_utils.py`
+- Split/Enrich/QA/Release: `split/*.py`, `enrich/*.py`, `stage*.py`
+- Driver: `run_pipeline.py` (all stages), `run_pipeline_validation.py` (sample run)
+- Windows helper: `scripts/run_pipeline_cmd.bat` (conda env + cleanup + run)
+
+## Requirements
+- Python 3.10+
+- Recommended: a Conda environment named `pipeline` with packages from `requirements.txt`.
+
+Conda on Windows (recommended)
+```cmd
+conda create -n pipeline python=3.11 -y
+conda activate pipeline
+pip install -r requirements.txt
+```
+
+POSIX venv
 ```bash
 bash scripts/setup_env.sh
 source .venv/bin/activate
+pip install -r requirements.txt
 ```
 
-### 2) Vocabulary (OMOP)
-- วาง vocab ที่ `vocab/vocabulary_SNOMED_MEDDRA_RxNorm_ATC/`
-- อย่างน้อยต้องมีไฟล์ `CONCEPT.csv` และ `CONCEPT_ANCESTOR.csv`
+### OMOP Vocabulary
+Place the vocabulary under `vocab/vocabulary_SNOMED_MEDDRA_RxNorm_ATC/` (or configure `--vocab-dir`). At minimum you need:
+- `CONCEPT.csv` (or `.gz`)
+- `CONCEPT_ANCESTOR.csv` (or `.gz`)
 
-### 3) ข้อมูล openFDA (Stage‑1)
-- เตรียมโครงสร้างโฟลเดอร์ `data/openFDA_drug_event/` โดยมีโฟลเดอร์ย่อยเช่น `report/`, `patient/`, `patient_drug/`, `patient_reaction/`, ...
+### openFDA Input
+If you do not have parsed raw folders, you can run `core/Parsing.py` (needs an API token in `data/input/.openFDA.params`) or download prebuilt ER input with `core/dataset.py` (Hugging Face dataset snapshot). The pipeline will automatically skip Stage 1/2 when it finds ER tables under:
+- `data/openFDA_drug_event/er_tables` (or `er_tables_memory_efficient`)
 
-## Stage‑2: สร้าง ER tables
-รันรวดเดียว (ใช้เวลานาน) หรือรันเป็นขั้นเพื่อลดความเสี่ยง timeout
+## Running the Pipeline
+Default run (all stages, skipping what already exists):
 ```bash
-# รวดเดียว
-python core/openFDA_Entity_Relationship_Tables_v2.py --workers 8 -v
-
-# ทีละขั้น (ตัวอย่าง)
-python core/openFDA_Entity_Relationship_Tables_v2.py --workers 8 -v --steps report
-python core/openFDA_Entity_Relationship_Tables_v2.py --workers 8 -v --steps patient
-python core/openFDA_Entity_Relationship_Tables_v2.py --workers 8 -v --steps patient_drug
-python core/openFDA_Entity_Relationship_Tables_v2.py --workers 8 -v --steps reactions
-python core/openFDA_Entity_Relationship_Tables_v2.py --workers 8 -v --steps standard_drugs
-python core/openFDA_Entity_Relationship_Tables_v2.py --workers 8 -v --steps standard_reactions
-python core/openFDA_Entity_Relationship_Tables_v2.py --workers 8 -v --steps standard_drugs_atc
-python core/openFDA_Entity_Relationship_Tables_v2.py --workers 8 -v --steps standard_drugs_rxnorm_ingredients
-python core/openFDA_Entity_Relationship_Tables_v2.py --workers 8 -v --steps standard_reactions_snomed
+python run_pipeline.py --no-confirm -y --qps 4 --max-workers 8
 ```
-ผลลัพธ์จะอยู่ใน `data/openFDA_drug_event/er_tables/` (ไฟล์ `.csv.gz`)
 
-## Enrich: RxNav และ DrugBank
-- RxNav (ออนไลน์จริง): ใช้ค่าเริ่มต้น ไม่ต้องใส่ `--demo`
-- RxNav (demo/ออฟไลน์): ใส่ `--demo` ตอนรัน `enrich/rxnav_enrich.py` หรือใช้ env `RXNAV_OFFLINE=1`
-- DrugBank (จริง): ต้องมีไบนารี Chrome/Chromium (หรือใช้ Selenium Remote)
-- DrugBank (demo): ใช้ `--demo` กับ `enrich/production_drugbank_scraper.py`
+Useful flags
+- `--vocab-dir PATH`     : Custom path to OMOP vocab directory
+- `--suspect-only`       : Use only suspect drugs in Stage 4 split
+- `--use-llm`            : Enable optional LLM-based cleaning in `enrich/clean_drug.py`
+- `--llm-module NAME`    : Python module providing `llm_clean(list)->list`
+- `--qps N`              : RxNav query-per-second rate limit (default 4)
+- `--max-workers N`      : RxNav concurrency
+- `--shards S --shard-id I` : Shard processing (advanced)
+- `--age-col NAME`       : Age column used for cohort split (default `patient_custom_master_age`)
+- `--until-stage N`      : Stop after stage N (1..10)
+- `--force`              : Force re-run of stages even if outputs exist (see fallback below)
+- `--demo-rxnav`         : Offline/demo RxNorm mapping (no network, standard library only)
 
-### เบราว์เซอร์สำหรับ DrugBank (ไม่ต้อง sudo)
-วิธี A: ระบุพาธไบนารี Chrome/Chromium โดยตรง
+Windows (Conda) quick run
+```cmd
+scripts\run_pipeline_cmd.bat
+```
+This script:
+- activates the `pipeline` conda env,
+- deletes large temporary indexes (e.g., `data\split\*_sid_index.sqlite`) and old logs/steps,
+- installs requirements (best-effort),
+- runs `run_pipeline.py`.
+
+## Outputs (key files)
+- `data/baseline/patients_report_serious_reporter.csv.gz`        : Baseline (Stage 3)
+- `data/split/adr_map.csv.gz`, `data/split/drug_map.csv.gz`      : Dictionaries/maps (Stage 4)
+- `data/enrich/standard_reactions*.csv.gz`                        : MedDRA PT/SOC (Stage 5)
+- `data/enrich/drug_clean.csv.gz`, `data/enrich/drug_rxnorm.csv.gz` : Cleaned and RxNorm (Stage 6)
+- `data/processed/FDA_patient_drug_report_reaction.csv.gz`       : Final merged pairs (Stage 7)
+- `data/processed/pediatric.csv.gz`, `adults.csv.gz`, `age_unknown.csv.gz` : Cohorts (Stage 8)
+- `data/qa/*`                                                     : QA artifacts (Stage 9)
+- `data/release/<DATE>/MANIFEST.json`                             : Release manifest (Stage 10)
+
+## Validation Run (sample)
+`run_pipeline_validation.py` provides a smaller end-to-end test (Stage 3 -> 10). You can use it to verify your environment before running the full dataset.
+
+Example
 ```bash
-export CHROME_BIN=/path/to/chrome  # ชี้ไปที่ไฟล์ไบนารีจริง
 python run_pipeline_validation.py --sample-size 50 --qps 4 --max-workers 8
-
-# ��� DrugBank scraping ��������˹�ҵ�ҧ (sessions)
-# ���������鹢ͧ validation ���Դ 4 sessions �ѵ��ѵԷ���� DrugBank
-# �ҡ��ͧ����ѹ�¡���ͻ�Ѻ�ӹǹ�ͧ:
-python enrich/production_drugbank_scraper.py \
-  --input-file data/test_runs/<date>/<run_id>/enrich/drug_rxnorm.csv.gz \
-  --output-dir data/enrich/drugbank \
-  --sessions 4 --init-visible --interactive-init
-```
-สคริปต์จะส่ง `--chrome-binary` ให้ scraper อัตโนมัติ
-
-วิธี B: ใช้ Selenium Remote (ถ้ามี Selenium Grid)
-- หากต้องการรองรับ แจ้ง URL ของ Grid เพื่อเพิ่มทางเลือกการเชื่อมต่อ
-
-## Pipeline validation test (Stage‑3 → Stage‑10)
-รันทดสอบครบชุดบน sample เพื่อยืนยันว่า pipeline ทำงานได้จริงทั้งแบบออนไลน์และโหมด demo
-```bash
-# ตัวอย่าง (ออนไลน์จริง + มี Chrome)
-export CHROME_BIN=/path/to/chrome
-python run_pipeline_validation.py --sample-size 50 --qps 4 --max-workers 8
-
-# ��� DrugBank scraping ��������˹�ҵ�ҧ (sessions)
-# ���������鹢ͧ validation ���Դ 4 sessions �ѵ��ѵԷ���� DrugBank
-# �ҡ��ͧ����ѹ�¡���ͻ�Ѻ�ӹǹ�ͧ:
-python enrich/production_drugbank_scraper.py \
-  --input-file data/test_runs/<date>/<run_id>/enrich/drug_rxnorm.csv.gz \
-  --output-dir data/enrich/drugbank \
-  --sessions 4 --init-visible --interactive-init
-
-# หากยังไม่มี Chrome: ใช้ demo สำหรับ DrugBank ชั่วคราว
-# (ปรับ run_pipeline_validation.py ให้ส่ง --demo หรือเรียก production_drugbank_scraper.py ด้วย --demo)
 ```
 
-## โอนถ่ายข้อมูล (Google Drive)
-- อัปโหลดขึ้น Google Drive: ใช้ `scripts/upload_to_gdrive.py` รองรับไฟล์ config เพื่อไม่ต้องพิมพ์คำสั่งยาว
-  - เตรียม Service Account และแชร์โฟลเดอร์ปลายทางให้กับอีเมลของ SA (สิทธิ์ Editor)
-  - ไฟล์ตัวอย่าง: `scripts/gdrive_upload.json`
-  - ใช้งาน:
-```bash
-# สร้างโฟลเดอร์ชั่วคราวสำหรับไฟล์ zip (ถ้าจำเป็น)
-mkdir -p /md0/thanyathon/tmp
+## RxNav & DrugBank
+RxNav (online, default)
+- The normal Stage 6 uses RxNav REST APIs with rate-limiting and a local cache (`data/enrich/rxnav_cache.sqlite`).
 
-# อัปโหลดด้วยไฟล์ config (แก้ค่าใน scripts/gdrive_upload.json ตามต้องการ)
-python scripts/upload_to_gdrive.py --config scripts/gdrive_upload.json
+RxNav (offline/demo)
+- Add `--demo-rxnav` to `run_pipeline.py` to generate a deterministic placeholder mapping without network or pandas. This is intended for CI / low-resource testing, not for production data quality.
 
-# หรือ override บางค่าเฉพาะตอนเรียก (เช่น เปลี่ยนชื่อไฟล์)
-python scripts/upload_to_gdrive.py --config scripts/gdrive_upload.json \
-  --name openFDA_drug_event_$(date +%Y%m%d_%H%M%S).zip
-```
-- ดาวน์โหลดชุดข้อมูล/ผลลัพธ์กลับมา: ใช้ `scripts/fetch_openfda_data.py` (รองรับ Google Drive ผ่าน gdown และ HTTP(S))
-  - ดูรายละเอียดและตัวอย่างเพิ่มเติมใน `scripts/README.md`
+DrugBank (optional)
+- `enrich/production_drugbank_scraper.py` can add DrugBank IDs for INNs. It requires a Chrome/Chromium binary or Selenium Remote.
+- You can merge DrugBank IDs in Stage 7 with `--drugbank ... --filter-drugbank` (see `stage4_merge_back.py`).
 
-## Quick Start
-```bash
-# 1) เตรียมสภาพแวดล้อม
-bash scripts/setup_env.sh
-source .venv/bin/activate
+## Low-memory / Troubleshooting
+- Out-of-memory while reading large CSVs in Stage 7: run the pipeline with `--force` to trigger the streaming fallback merger (no pandas). It will be slower but use much less memory.
+- No network or RxNav unavailable: use `--demo-rxnav`.
+- Disk space concerns: delete `data/split/adr_sid_index.sqlite`, `data/split/drug_sid_index.sqlite`, and old `data/logs/steps/` folders. The Windows helper batch does this automatically.
+- ER tables not found: ensure they exist under `data/openFDA_drug_event/er_tables` or create them with Stage 1/2 scripts.
 
-# 2) เตรียม vocab + openFDA data ตามโครงสร้างข้างต้น
+## Data Transfer (Google Drive)
+- Upload artifacts via `scripts/upload_to_gdrive.py` using a JSON config (see `scripts/gdrive_upload.json`).
+- Download prebuilt data via `scripts/fetch_openfda_data.py` (supports Google Drive `gdown` and HTTP(S)). See `scripts/README.md` for details.
 
-# 3) สร้าง ER (เลือกวิธีรวดเดียวหรือทีละขั้น)
-python core/openFDA_Entity_Relationship_Tables_v2.py --workers 8 -v
-
-# 4) รัน pipeline validation test (ออนไลน์จริง)
-export CHROME_BIN=/path/to/chrome
-python run_pipeline_validation.py --sample-size 50 --qps 4 --max-workers 8
-
-# ��� DrugBank scraping ��������˹�ҵ�ҧ (sessions)
-# ���������鹢ͧ validation ���Դ 4 sessions �ѵ��ѵԷ���� DrugBank
-# �ҡ��ͧ����ѹ�¡���ͻ�Ѻ�ӹǹ�ͧ:
-python enrich/production_drugbank_scraper.py \
-  --input-file data/test_runs/<date>/<run_id>/enrich/drug_rxnorm.csv.gz \
-  --output-dir data/enrich/drugbank \
-  --sessions 4 --init-visible --interactive-init
-```
-
-## FAQ / Troubleshooting
-- เปิด Chrome ไม่ได้เพราะ GLIBC เก่า: ใช้ Selenium Remote หรือโหมด demo ชั่วคราว
-- ไม่มีเน็ตเรียก RxNav: ใช้ `RXNAV_OFFLINE=1` หรือ `--demo` ที่ `enrich/rxnav_enrich.py`
-- ต้องการกรองด้วยผล DrugBank ในไฟล์สุดท้าย: รัน `enrich/production_drugbank_scraper.py` เพื่อสร้าง `drugbank_results.csv` แล้วเรียก `stage4_merge_back.py` พร้อม `--drugbank ... --filter-drugbank`
+---
+If anything is unclear or you need a tailored runbook for your environment (Conda, Docker, or cloud), please open an issue or start a discussion.

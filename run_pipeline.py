@@ -576,7 +576,7 @@ def main():
     fh.setFormatter(fmt); ch.setFormatter(fmt)
     logger.handlers.clear(); logger.addHandler(fh); logger.addHandler(ch)
 
-    logger.info("=== RUN PIPELINE: 1 Parsing → 2 ER → 3 Baseline → 4 Split → 5 ADR → 6 Drug → 7 Merge → 8 Cohorts → 9 QA → 10 Release ===")
+    logger.info("=== RUN PIPELINE: 1 Parsing -> 2 ER -> 3 Baseline -> 4 Split -> 5 ADR -> 6 Drug -> 7 Merge -> 8 Cohorts -> 9 QA -> 10 Release ===")
     logger.info(f"[LOG] Pipeline log: {os.path.relpath(pipe_log, ROOT)}")
     logger.info(f"[LOG] Step logs   : {os.path.relpath(steps_dir, ROOT)}/")
 
@@ -641,7 +641,7 @@ def main():
         if existing_er:
             logger.info("Stage-2: SKIPPED (ER found)")
         elif not args.skip_stage2:
-            logger.info("Stage-2: Entity → build ER tables")
+            logger.info("Stage-2: Entity -> build ER tables")
             run_step([sys.executable, entity], "stage2_entity", logger, steps_dir, env_extra=child_env_for_imports())
         else:
             logger.info("Stage-2: SKIPPED (flag)")
@@ -737,7 +737,7 @@ def main():
             logger.info("Stage-5: SKIPPED (MedDRA outputs exist)")
 
         logger.info(f"MedDRA PT : {os.path.relpath(std_react, ROOT)}  [{path_info(std_react)}]")
-        logger.info(f"PT→SOC map: {os.path.relpath(soc_map,   ROOT)}  [{path_info(soc_map)}]")
+        logger.info(f"PT->SOC map: {os.path.relpath(soc_map,   ROOT)}  [{path_info(soc_map)}]")
 
         if not args.no_confirm and need_adr_map:
             print("\n[CONFIRM] ตรวจผล ADR mapping แล้วหรือยัง?")
@@ -753,7 +753,7 @@ def main():
 
     # ---------------- Stage-6: Drug (clean -> RxNav) ----------------
     if args.until_stage >= 6:
-        logger.info("Stage-6: Drug (clean → RxNav)")
+        logger.info("Stage-6: Drug (clean -> RxNav)")
         # If rxnorm output already exists, skip heavy work
         pre_rx = rxnorm_existing(enrich_dir, args.shards, args.shard_id)
         if pre_rx and not args.force:
@@ -765,7 +765,7 @@ def main():
             out_rx = (os.path.join(enrich_dir, f"drug_rxnorm_sh{args.shard_id}.csv.gz")
                       if args.shards>1 else os.path.join(enrich_dir, "drug_rxnorm.csv.gz"))
             if args.demo_rxnav:
-                logger.info("Stage-6: DEMO mode → building minimal RxNorm mapping without network/pandas")
+                logger.info("Stage-6: DEMO mode -> building minimal RxNorm mapping without network/pandas")
                 build_rxnorm_demo(drug_dict, out_clean, out_rx, logger)
             else:
                 # Normal path using child scripts

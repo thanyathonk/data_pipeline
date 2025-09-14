@@ -44,9 +44,8 @@ python -m pip install -r requirements.txt || echo [WARN] pip install skipped/fai
 
 rem ---- Run pipeline (all stages) ----
 echo [RUN] Starting pipeline ...
-python run_pipeline.py --no-confirm -y --qps 4 --max-workers 8
+python run_pipeline.py --no-confirm -y --qps 4 --max-workers 8 --force
 set "EXITCODE=%ERRORLEVEL%"
 
 echo [DONE] Pipeline finished with exit code %EXITCODE%
 exit /b %EXITCODE%
-
