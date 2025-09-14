@@ -6,3 +6,5 @@ selenium>=4.20
 undetected-chromedriver>=3.5
 gdown>=5.2
 pydrive2>=1.17
+datasets>=2.19
+huggingface_hub>=0.23

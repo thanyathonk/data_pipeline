@@ -1,13 +1,13 @@
 # FAERS Data Pipeline (openFDA → ER → Enrich → Merge → Release)
 
-โครงการนี้คือ pipeline สำหรับประมวลผลข้อมูลเหตุการณ์ไม่พึงประสงค์จากยา (FAERS/openFDA drug event) ตั้งแต่แปลงให้อยู่ในรูป Entity–Relationship (ER), enrich ด้วย RxNav/DrugBank, รวมผล, ตรวจสอบคุณภาพ (QA) และจัดแพ็กไฟล์สำหรับเผยแพร่ โดยมีสคริปต์ smoke test ครบชุด (Stage‑3 → Stage‑10) เพื่อช่วยยืนยันความถูกต้องของ flow บนชุดตัวอย่างขนาดเล็ก
+โครงการนี้คือ pipeline สำหรับประมวลผลข้อมูลเหตุการณ์ไม่พึงประสงค์จากยา (FAERS/openFDA drug event) ตั้งแต่แปลงให้อยู่ในรูป Entity–Relationship (ER), enrich ด้วย RxNav/DrugBank, รวมผล, ตรวจสอบคุณภาพ (QA) และจัดแพ็กไฟล์สำหรับเผยแพร่ โดยมีสคริปต์ pipeline validation test ครบชุด (Stage‑3 → Stage‑10) เพื่อช่วยยืนยันความถูกต้องของ flow บนชุดตัวอย่างขนาดเล็ก
 
 # Workflow
 ![Image](./merge/version_1.1.png)
 
 ## โครงสร้างที่ใช้บ่อย
 - Stage‑2 สร้าง ER tables: `core/openFDA_Entity_Relationship_Tables_v2.py`
-- Smoke test (Stage‑3 → 10): `run_smoke_test.py`
+- pipeline validation test (Stage‑3 → 10): `run_pipeline_validation.py`
 - Enrich ยา (RxNav): `enrich/rxnav_enrich.py`
 - Enrich ยา (DrugBank): `enrich/production_drugbank_scraper.py`
 - Split/Merge/QA/Release: `split/*.py`, `stage4_merge_back.py`, `stage5_split_cohorts.py`, `stage6_qa_checks.py`, `stage7_release_pack.py`
@@ -24,7 +24,7 @@ source .venv/bin/activate
 
 ### 2) Vocabulary (OMOP)
 - วาง vocab ที่ `vocab/vocabulary_SNOMED_MEDDRA_RxNorm_ATC/`
-- อย่างน้อยต้องมีไฟล์ `CONCEPT.csv` และ `CONCEPT_RELATIONSHIP.csv`
+- อย่างน้อยต้องมีไฟล์ `CONCEPT.csv` และ `CONCEPT_ANCESTOR.csv`
 
 ### 3) ข้อมูล openFDA (Stage‑1)
 - เตรียมโครงสร้างโฟลเดอร์ `data/openFDA_drug_event/` โดยมีโฟลเดอร์ย่อยเช่น `report/`, `patient/`, `patient_drug/`, `patient_reaction/`, ...
@@ -58,22 +58,38 @@ python core/openFDA_Entity_Relationship_Tables_v2.py --workers 8 -v --steps stan
 วิธี A: ระบุพาธไบนารี Chrome/Chromium โดยตรง
 ```bash
 export CHROME_BIN=/path/to/chrome  # ชี้ไปที่ไฟล์ไบนารีจริง
-python run_smoke_test.py --sample-size 50 --qps 4 --max-workers 8
+python run_pipeline_validation.py --sample-size 50 --qps 4 --max-workers 8
+
+# ��� DrugBank scraping ��������˹�ҵ�ҧ (sessions)
+# ���������鹢ͧ validation ���Դ 4 sessions �ѵ��ѵԷ���� DrugBank
+# �ҡ��ͧ����ѹ�¡���ͻ�Ѻ�ӹǹ�ͧ:
+python enrich/production_drugbank_scraper.py \
+  --input-file data/test_runs/<date>/<run_id>/enrich/drug_rxnorm.csv.gz \
+  --output-dir data/enrich/drugbank \
+  --sessions 4 --init-visible --interactive-init
 ```
 สคริปต์จะส่ง `--chrome-binary` ให้ scraper อัตโนมัติ
 
 วิธี B: ใช้ Selenium Remote (ถ้ามี Selenium Grid)
 - หากต้องการรองรับ แจ้ง URL ของ Grid เพื่อเพิ่มทางเลือกการเชื่อมต่อ
 
-## Smoke Test (Stage‑3 → Stage‑10)
+## Pipeline validation test (Stage‑3 → Stage‑10)
 รันทดสอบครบชุดบน sample เพื่อยืนยันว่า pipeline ทำงานได้จริงทั้งแบบออนไลน์และโหมด demo
 ```bash
 # ตัวอย่าง (ออนไลน์จริง + มี Chrome)
 export CHROME_BIN=/path/to/chrome
-python run_smoke_test.py --sample-size 50 --qps 4 --max-workers 8
+python run_pipeline_validation.py --sample-size 50 --qps 4 --max-workers 8
+
+# ��� DrugBank scraping ��������˹�ҵ�ҧ (sessions)
+# ���������鹢ͧ validation ���Դ 4 sessions �ѵ��ѵԷ���� DrugBank
+# �ҡ��ͧ����ѹ�¡���ͻ�Ѻ�ӹǹ�ͧ:
+python enrich/production_drugbank_scraper.py \
+  --input-file data/test_runs/<date>/<run_id>/enrich/drug_rxnorm.csv.gz \
+  --output-dir data/enrich/drugbank \
+  --sessions 4 --init-visible --interactive-init
 
 # หากยังไม่มี Chrome: ใช้ demo สำหรับ DrugBank ชั่วคราว
-# (ปรับ run_smoke_test.py ให้ส่ง --demo หรือเรียก production_drugbank_scraper.py ด้วย --demo)
+# (ปรับ run_pipeline_validation.py ให้ส่ง --demo หรือเรียก production_drugbank_scraper.py ด้วย --demo)
 ```
 
 ## โอนถ่ายข้อมูล (Google Drive)
@@ -106,9 +122,17 @@ source .venv/bin/activate
 # 3) สร้าง ER (เลือกวิธีรวดเดียวหรือทีละขั้น)
 python core/openFDA_Entity_Relationship_Tables_v2.py --workers 8 -v
 
-# 4) รัน Smoke Test (ออนไลน์จริง)
+# 4) รัน pipeline validation test (ออนไลน์จริง)
 export CHROME_BIN=/path/to/chrome
-python run_smoke_test.py --sample-size 50 --qps 4 --max-workers 8
+python run_pipeline_validation.py --sample-size 50 --qps 4 --max-workers 8
+
+# ��� DrugBank scraping ��������˹�ҵ�ҧ (sessions)
+# ���������鹢ͧ validation ���Դ 4 sessions �ѵ��ѵԷ���� DrugBank
+# �ҡ��ͧ����ѹ�¡���ͻ�Ѻ�ӹǹ�ͧ:
+python enrich/production_drugbank_scraper.py \
+  --input-file data/test_runs/<date>/<run_id>/enrich/drug_rxnorm.csv.gz \
+  --output-dir data/enrich/drugbank \
+  --sessions 4 --init-visible --interactive-init
 ```
 
 ## FAQ / Troubleshooting

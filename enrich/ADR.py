@@ -57,6 +57,51 @@ def read_vocab_table(vocab_dir, base):
         raise SystemExit(f"[vocab] Not found: {base} under {vocab_dir}")
     return _read_table_auto(path)
 
+def _detect_sep(path):
+    for sep in ("\t", ",", "|"):
+        try:
+            pd.read_csv(path, sep=sep, nrows=5, dtype=str)
+            return sep
+        except Exception:
+            continue
+    return None
+
+def _read_concept_chunked(vocab_dir):
+    path = _find_vocab_file(vocab_dir, "CONCEPT.csv")
+    if not path:
+        raise SystemExit(f"[vocab] Not found: CONCEPT.csv under {vocab_dir}")
+    sep = _detect_sep(path) or ","
+    req = ["concept_id","concept_name","concept_code","concept_class_id","vocabulary_id"]
+    pts, socs = [], []
+    for ch in pd.read_csv(path, dtype=str, chunksize=250000, sep=sep, low_memory=False):
+        ch.columns = [c.strip() for c in ch.columns]
+        # keep only needed columns if present
+        keep = [c for c in req if c in ch.columns]
+        ch = ch[keep]
+        meddra = ch[ch["vocabulary_id"].str.upper()=="MEDDRA"].copy()
+        if meddra.empty:
+            continue
+        pts.append(meddra[meddra["concept_class_id"].str.upper()=="PT"]) 
+        socs.append(meddra[meddra["concept_class_id"].str.upper()=="SOC"]) 
+    meddra_pt = pd.concat(pts, ignore_index=True) if pts else pd.DataFrame(columns=req)
+    meddra_soc = pd.concat(socs, ignore_index=True) if socs else pd.DataFrame(columns=req)
+    return meddra_pt, meddra_soc
+
+def _read_concept_ancestor_chunked(vocab_dir, pt_ids_set):
+    path = _find_vocab_file(vocab_dir, "CONCEPT_ANCESTOR.csv")
+    if not path:
+        raise SystemExit(f"[vocab] Not found: CONCEPT_ANCESTOR.csv under {vocab_dir}")
+    sep = _detect_sep(path) or ","
+    usecols = ["ancestor_concept_id","descendant_concept_id","min_levels_of_separation","max_levels_of_separation"]
+    keep = []
+    for ch in pd.read_csv(path, dtype=str, chunksize=250000, sep=sep, low_memory=False):
+        ch.columns = [c.strip() for c in ch.columns]
+        ch = ch[[c for c in usecols if c in ch.columns]]
+        ch = ch[ch["descendant_concept_id"].astype(str).isin(pt_ids_set)]
+        if not ch.empty:
+            keep.append(ch)
+    return pd.concat(keep, ignore_index=True) if keep else pd.DataFrame(columns=usecols)
+
 def read_csv_any(path): return pd.read_csv(path, low_memory=False, dtype=str)
 
 def write_csv_gz(df, path):
@@ -84,20 +129,16 @@ def main(adr_dict_path: str, out_dir: str, vocab_dir: str):
     adr["concept_name_key"] = adr["reaction_meddrapt"].map(norm_key)
 
     # 1) vocab
-    concept  = read_vocab_table(vocab_dir, "CONCEPT.csv")
-    concept.columns  = [c.strip() for c in concept.columns]
-    reqc = {"concept_id","concept_name","concept_code","concept_class_id","vocabulary_id"}
-    if not reqc.issubset(concept.columns): raise SystemExit(f"[vocab] CONCEPT.csv missing: {reqc - set(concept.columns)}")
+    meddra_pt, meddra_soc = _read_concept_chunked(vocab_dir)
+    if meddra_pt.empty and meddra_soc.empty:
+        raise SystemExit("[vocab] Unable to load MedDRA PT/SOC from CONCEPT.csv")
+    meddra_pt["concept_name_key"] = meddra_pt["concept_name"].map(norm_key)
 
-    ancestor = read_vocab_table(vocab_dir, "CONCEPT_ANCESTOR.csv")
-    ancestor.columns = [c.strip() for c in ancestor.columns]
+    pt_ids = set(meddra_pt["concept_id"].dropna().astype(str).unique().tolist())
+    ancestor = _read_concept_ancestor_chunked(vocab_dir, pt_ids)
     reqa = {"ancestor_concept_id","descendant_concept_id","min_levels_of_separation","max_levels_of_separation"}
-    if not reqa.issubset(ancestor.columns): raise SystemExit(f"[vocab] CONCEPT_ANCESTOR.csv missing: {reqa - set(ancestor.columns)}")
-
-    concept["concept_name_key"] = concept["concept_name"].map(norm_key)
-    meddra       = concept[concept["vocabulary_id"].str.upper()=="MEDDRA"].copy()
-    meddra_pt    = meddra[meddra["concept_class_id"].str.upper()=="PT"].copy()
-    meddra_soc   = meddra[meddra["concept_class_id"].str.upper()=="SOC"].copy()
+    if ancestor.empty:
+        raise SystemExit("[vocab] Unable to load relevant CONCEPT_ANCESTOR rows")
 
     # 2) map PT by normalized name
     pt_match = adr.merge(

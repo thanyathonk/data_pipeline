@@ -69,6 +69,14 @@ def main(a):
     }
     manifest_path = os.path.join(out_dir, "MANIFEST.json")
     open(manifest_path, "w", encoding="utf-8").write(json.dumps(manifest, ensure_ascii=False, indent=2))
+    # also write a copy under data/manifests for indexing
+    try:
+        mdir = os.path.join("data","manifests")
+        os.makedirs(mdir, exist_ok=True)
+        ts_manifest = os.path.join(mdir, f"manifest_{day}.json")
+        open(ts_manifest, "w", encoding="utf-8").write(json.dumps(manifest, ensure_ascii=False, indent=2))
+    except Exception:
+        pass
 
     print(f"[OK] Stage-7 release → {out_dir}")
     if missing:

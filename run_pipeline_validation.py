@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-run_smoke_test.py — end-to-end smoke on a small sample with new stage layout
+run_pipeline_validation.py — end-to-end pipeline validation on a small sample
 
 Pipeline stages (reference):
   1) core/Parsing.py
@@ -52,6 +52,17 @@ def run_step(cmd, step_name, logger, steps_dir, cwd=None, env_extra=None):
     cmd = _inject_unbuffered(cmd)
     logger.debug(f"[STEP:{step_name}] RUN: {' '.join(cmd)} (cwd={cwd or ROOT})")
     logger.debug(f"[STEP:{step_name}] Log -> {os.path.relpath(step_log, ROOT)}")
+    def _scrub_console(s: str) -> str:
+        try:
+            enc = getattr(sys.stdout, "encoding", None) or "ascii"
+            s.encode(enc)
+            return s
+        except Exception:
+            try:
+                return s.encode("ascii", "ignore").decode("ascii")
+            except Exception:
+                return s
+
     with open(step_log,"wb") as sf:
         p = subprocess.Popen(cmd, cwd=cwd or ROOT, stdout=subprocess.PIPE,
                              stderr=subprocess.STDOUT, bufsize=0, env=env)
@@ -62,12 +73,12 @@ def run_step(cmd, step_name, logger, steps_dir, cwd=None, env_extra=None):
             if ch in (b"\n", b"\r"):
                 if buf:
                     line = buf.decode("utf-8","replace").rstrip()
-                    logger.info(line); sf.write((line+"\n").encode("utf-8")); sf.flush(); buf=b""
+                    logger.info(_scrub_console(line)); sf.write((line+"\n").encode("utf-8")); sf.flush(); buf=b""
             else:
                 buf += ch
         if buf:
             line = buf.decode("utf-8","replace").rstrip()
-            logger.info(line); sf.write((line+"\n").encode("utf-8")); sf.flush()
+            logger.info(_scrub_console(line)); sf.write((line+"\n").encode("utf-8")); sf.flush()
         code = p.wait()
         if code!=0:
             raise SystemExit(f"[STEP:{step_name}] Command failed ({code}): {' '.join(cmd)}")
@@ -178,15 +189,15 @@ def main():
     DATE_PATH = os.path.join(now.strftime("%Y"), now.strftime("%m"), now.strftime("%d"))
     logs_dir  = ensure_dir(rel("data","logs", DATE_PATH))
     steps_dir = ensure_dir(os.path.join(logs_dir, "steps"))
-    pipe_log  = os.path.join(logs_dir, f"smoke_{TS}.log")
-    logger = logging.getLogger("smoke"); logger.setLevel(logging.DEBUG)
+    pipe_log  = os.path.join(logs_dir, f"validation_{TS}.log")
+    logger = logging.getLogger("validation"); logger.setLevel(logging.DEBUG)
     fh = logging.FileHandler(pipe_log, encoding="utf-8"); fh.setLevel(logging.DEBUG)
     ch = logging.StreamHandler(sys.stdout);              ch.setLevel(logging.INFO)
     fmt= logging.Formatter("[%(asctime)s] %(levelname)s: %(message)s")
     fh.setFormatter(fmt); ch.setFormatter(fmt)
     logger.handlers.clear(); logger.addHandler(fh); logger.addHandler(ch)
 
-    logger.info("=== SMOKE TEST (Stages 3→10 on a sampled baseline; ER from Stage-2 must exist) ===")
+    logger.info("=== PIPELINE VALIDATION (Stages 3->10 on a sampled baseline; ER from Stage-2 must exist) ===")
     logger.info(f"[LOG] pipeline : {os.path.relpath(pipe_log, ROOT)}")
     logger.info(f"[LOG] step dir : {os.path.relpath(steps_dir, ROOT)}/")
 
@@ -195,7 +206,7 @@ def main():
     if not er_root:
         raise SystemExit(
             "[SMOKE] ER tables not found. Please run Stage-1/2 to build ER, "
-            "or download prepared ER into data/openFDA_drug_event/ before running smoke test."
+            "or download prepared ER into data/openFDA_drug_event/ before running validation."
         )
     logger.info(f"[ER] Using: {er_root}")
 
@@ -232,7 +243,8 @@ def main():
     # ---------- Stage-3 (sample baseline built here) ----------
     logger.info("[SMOKE] Stage-3: Build baseline SAMPLE from ER")
     sids = sample_sids_from_er(er_root, sample_size=args.sample_size, source="report.csv.gz")
-    base_csv = os.path.join(dirs["baseline"], "baseline_sample.csv.gz")
+    # Use production-like baseline filename for consistency
+    base_csv = os.path.join(dirs["baseline"], "patients_report_serious_reporter.csv.gz")
     build_baseline_sample_from_er(er_root, sids, base_csv, logger)
 
     # ---------- Stage-4: Split dictionaries ----------
@@ -260,7 +272,7 @@ def main():
              "smk_stage5_adr_mapping", logger, steps_dir, env_extra=child_env_for_imports())
 
     # ---------- Stage-6: Drug (clean -> RxNav; REAL APIs) ----------
-    logger.info("[SMOKE] Stage-6: Drug (clean → RxNav)")
+    logger.info("[SMOKE] Stage-6: Drug (clean -> RxNav)")
     out_clean = os.path.join(dirs["enrich"], "drug_clean.csv.gz")
     run_step([sys.executable, clean_drug_py,
               "--in-drug-dict", drug_dict,
@@ -285,11 +297,39 @@ def main():
     chrome_bin = os.environ.get("CHROME_BIN")
     cmd_db = [sys.executable, drugbank_py,
               "--input-file", out_rx,
-              "--output-dir", drugbank_dir]
+              "--output-dir", drugbank_dir,
+              "--sessions", "4",
+              "--init-visible",
+              "--interactive-init"]
     if chrome_bin:
         cmd_db += ["--chrome-binary", chrome_bin]
+    # Run real DrugBank scraping in interactive mode (no demo fallback here)
     run_step(cmd_db,
              "smk_stage6_drugbank", logger, steps_dir, env_extra=child_env_for_imports())
+    # Standardize DrugBank output name and columns for downstream use
+    try:
+        import pandas as _pd
+        _res_csv = os.path.join(drugbank_dir, "drugbank_results.csv")
+        if os.path.exists(_res_csv):
+            _df = _pd.read_csv(_res_csv)
+            if "modality" in _df.columns and "drug_type" not in _df.columns:
+                _df["drug_type"] = _df["modality"].astype(str)
+            if "molecular_weight" not in _df.columns:
+                aw = _df["average_weight"] if "average_weight" in _df.columns else None
+                mw = _df["monoisotopic_weight"] if "monoisotopic_weight" in _df.columns else None
+                if aw is not None or mw is not None:
+                    _df["molecular_weight"] = (aw.fillna(mw) if aw is not None else mw)
+            if "url" not in _df.columns:
+                _df["url"] = ""
+            keep = [
+                "ingredient","drugbank_id","smiles","molecular_weight","drug_type","url",
+                "actual_drug_name","unii","cas_number","inchi_key","iupac_name"
+            ]
+            _out = os.path.join(dirs["enrich"], "drug_drugbank.csv.gz")
+            _df[[c for c in keep if c in _df.columns]].to_csv(_out, index=False, compression="gzip")
+            logger.info(f"[SMOKE] Standardized DrugBank -> {_out}")
+    except Exception as e:
+        logger.warning(f"[SMOKE] Unable to standardize DrugBank output: {e}")
 
     # ---------- Stage-7: Merge-back ----------
     logger.info("[SMOKE] Stage-7: Merge-back")
@@ -347,6 +387,26 @@ def main():
               out_unprod, out_unadr, out_dupes, out_qsum],
              "smk_stage10_release", logger, steps_dir, env_extra=child_env_for_imports())
 
+    # Prepare delivery folder with subset for the team
+    delivery_dir = ensure_dir(rel("data","deliveries", TS))
+    try:
+        from shutil import copy2
+        deliver = [
+            out_csv,
+            out_ped, out_adu,
+            out_sst,
+            os.path.join(dirs["enrich"], "standard_reactions.csv.gz"),
+            os.path.join(dirs["enrich"], "standard_reactions_meddra_soc.csv.gz"),
+            out_rx,
+            os.path.join(dirs["enrich"], "drug_drugbank.csv.gz"),
+        ]
+        for p in deliver:
+            if os.path.exists(p):
+                copy2(p, os.path.join(delivery_dir, os.path.basename(p)))
+        logger.info(f"[SMOKE] Delivery folder -> {delivery_dir}")
+    except Exception as e:
+        logger.warning(f"[SMOKE] Unable to assemble delivery folder: {e}")
+
     summary = {
         "sandbox_root": os.path.relpath(sand_root, ROOT),
         "release_dir":  os.path.relpath(release_dir, ROOT),
@@ -369,7 +429,7 @@ def main():
     with open(os.path.join(sand_root, "SMOKE_SUMMARY.json"), "w", encoding="utf-8") as f:
         json.dump(summary, f, ensure_ascii=False, indent=2)
 
-    logger.info("[OK] SMOKE TEST DONE")
+    logger.info("[OK] PIPELINE VALIDATION DONE")
     logger.info(f"Sandbox : {os.path.relpath(sand_root, ROOT)}")
     logger.info(f"Release : {os.path.relpath(release_dir, ROOT)}")
 

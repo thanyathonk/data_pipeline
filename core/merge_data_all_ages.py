@@ -42,12 +42,12 @@ def _to_str_sid(s):
         return str(s)
 
 
-def read_entity(er_root: str, name: str, low_memory: bool = False) -> pd.DataFrame:
+def read_entity(er_root: str, name: str, low_memory: bool = False, dtype_str: bool = True) -> pd.DataFrame:
     """อ่านไฟล์ entity จากโฟลเดอร์ ER tables และบังคับ safetyreportid เป็น str"""
     path = os.path.join(er_root, f"{name}.csv.gz")
     if not os.path.exists(path):
         raise FileNotFoundError(f"Not found: {path}")
-    df = pd.read_csv(path, low_memory=low_memory)
+    df = pd.read_csv(path, low_memory=low_memory, dtype=str if dtype_str else None)
     if "safetyreportid" in df.columns:
         df["safetyreportid"] = df["safetyreportid"].map(_to_str_sid)
     return df
@@ -64,60 +64,109 @@ def add_prefix(
     return df.rename(columns=ren)
 
 
+def _filter_by_ids(path: str, id_set: set[str]) -> pd.DataFrame:
+    """อ่านไฟล์ใหญ่แบบ chunk แล้วคัดแถวที่ safetyreportid อยู่ใน id_set (dtype=str)."""
+    keep = []
+    for ch in pd.read_csv(path, dtype=str, chunksize=1_000_000, low_memory=False):
+        if "safetyreportid" not in ch.columns:
+            continue
+        ch["safetyreportid"] = ch["safetyreportid"].map(_to_str_sid)
+        ch = ch[ch["safetyreportid"].isin(id_set)]
+        if not ch.empty:
+            keep.append(ch)
+    return pd.concat(keep, ignore_index=True) if keep else pd.DataFrame(columns=["safetyreportid"]) 
+
+
 def main(er_root: str, out_dir: str, join_type: str = "inner"):
     os.makedirs(out_dir, exist_ok=True)
 
-    # 1) โหลด entity tables
-    patient = read_entity(er_root, "patient")
-    report = read_entity(er_root, "report")
-    report_serious = read_entity(er_root, "report_serious")
-    reporter = read_entity(er_root, "reporter")
+    # 1) โหลด entity tables แบบ dtype=str (ลดปัญหาแปลง float) และใช้กลยุทธ์ stream join เพื่อลด memory
+    patient_path = os.path.join(er_root, "patient.csv.gz")
+    report_path = os.path.join(er_root, "report.csv.gz")
+    serious_path = os.path.join(er_root, "report_serious.csv.gz")
+    reporter_path = os.path.join(er_root, "reporter.csv.gz")
+    for p in (patient_path, report_path, serious_path, reporter_path):
+        if not os.path.exists(p):
+            raise FileNotFoundError(f"Not found: {p}")
+
+    # pre-count sizes for stats (cheap sampling)
+    def _count_rows(path):
+        c = 0
+        for ch in pd.read_csv(path, dtype=str, chunksize=2_000_000, low_memory=False):
+            c += len(ch)
+        return c
+
+    patient_n = _count_rows(patient_path)
+    report_n = _count_rows(report_path)
+    serious_n = _count_rows(serious_path)
+    reporter_n = _count_rows(reporter_path)
 
     # 2) เก็บจำนวนก่อน merge
     stats = {
         "counts": {
-            "patient": int(len(patient)),
-            "report": int(len(report)),
-            "report_serious": int(len(report_serious)),
-            "reporter": int(len(reporter)),
+            "patient": int(patient_n),
+            "report": int(report_n),
+            "report_serious": int(serious_n),
+            "reporter": int(reporter_n),
         },
         "join_type": join_type,
     }
 
-    # 3) กันชื่อคอลัมน์ชน: เติม prefix (ยกเว้น safetyreportid)
-    patient_pref = add_prefix(patient, "patient_")
-    report_pref = add_prefix(report, "report_")
-    serious_pref = add_prefix(report_serious, "serious_")
-    reporter_pref = add_prefix(reporter, "reportr_")
-
-    # 4) Merge ตามลำดับ (ทุกอายุ)
-    base = patient_pref.merge(report_pref, on="safetyreportid", how=join_type)
-    base = base.merge(serious_pref, on="safetyreportid", how=join_type)
-    base = base.merge(reporter_pref, on="safetyreportid", how=join_type)
-
-    # 5) จัด dtype เบื้องต้น (เตรียมไว้สำหรับการ split ทีหลัง)
-    age_like_cols = [c for c in base.columns if "patient_custom_master_age" in c]
-    for c in age_like_cols:
-        base[c] = pd.to_numeric(base[c], errors="coerce")
-
-    # 6) บันทึกผลลัพธ์
+    # 3) stream join เป็นก้อนตาม patient chunk
     out_csv = os.path.join(out_dir, "patients_report_serious_reporter.csv.gz")
-    base.to_csv(out_csv, index=False, compression="gzip")
+    wrote_header = False
+    merged_total = 0
+    age_null_total = 0
 
-    stats["counts"]["merged_rows"] = int(len(base))
-    stats["nulls"] = {
-        "patient_custom_master_age_null": (
-            int(base[age_like_cols[0]].isna().sum()) if age_like_cols else None
-        )
-    }
+    for pch in pd.read_csv(patient_path, dtype=str, chunksize=2_000_000, low_memory=False):
+        if pch.empty:
+            continue
+        pch["safetyreportid"] = pch["safetyreportid"].map(_to_str_sid)
+        ids = set(pch["safetyreportid"].dropna().astype(str))
+
+        # filter other tables by ids in this chunk
+        rep = _filter_by_ids(report_path, ids)
+        ser = _filter_by_ids(serious_path, ids)
+        rtr = _filter_by_ids(reporter_path, ids)
+
+        # prefix columns
+        p_pref = add_prefix(pch, "patient_")
+        rep_pref = add_prefix(rep, "report_")
+        ser_pref = add_prefix(ser, "serious_")
+        rtr_pref = add_prefix(rtr, "reportr_")
+
+        # merge in-memory for this chunk
+        base = p_pref.merge(rep_pref, on="safetyreportid", how=join_type)
+        base = base.merge(ser_pref, on="safetyreportid", how=join_type)
+        base = base.merge(rtr_pref, on="safetyreportid", how=join_type)
+
+        # numeric coercion for age column(s) if exist
+        age_like_cols = [c for c in base.columns if "patient_custom_master_age" in c]
+        for c in age_like_cols:
+            base[c] = pd.to_numeric(base[c], errors="coerce")
+        if age_like_cols:
+            age_null_total += int(base[age_like_cols[0]].isna().sum())
+
+        # append to gzip file
+        mode = "wb" if not wrote_header else "ab"
+        import gzip as _gz
+        with _gz.open(out_csv, mode) as f:
+            base.to_csv(f, index=False, header=not wrote_header)
+        wrote_header = True
+        merged_total += len(base)
+
+        # free explicitly
+        del pch, rep, ser, rtr, p_pref, rep_pref, ser_pref, rtr_pref, base
 
     out_stats = os.path.join(out_dir, "patients_report_serious_reporter_stats.json")
     with open(out_stats, "w", encoding="utf-8") as f:
+        stats["counts"]["merged_rows"] = int(merged_total)
+        stats["nulls"] = {"patient_custom_master_age_null": age_null_total}
         json.dump(stats, f, ensure_ascii=False, indent=2)
 
     print(f"[OK] Wrote CSV : {out_csv}")
     print(f"[OK] Wrote STAT: {out_stats}")
-    print(f"[OK] join_type={join_type}  rows={len(base)}")
+    print(f"[OK] join_type={join_type}  rows={merged_total}")
 
 
 if __name__ == "__main__":

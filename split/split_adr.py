@@ -1,5 +1,5 @@
 # split_adr.py
-import os, argparse, pandas as pd
+import os, argparse, pandas as pd, gzip, sqlite3, tempfile
 from common_utils import to_str_sid, slug_key, read_csv_any, write_csv_gz, dump_json
 
 def main(er_root: str, out_dir: str, base_csv: str=None, dedup: bool=True):
@@ -10,39 +10,88 @@ def main(er_root: str, out_dir: str, base_csv: str=None, dedup: bool=True):
     if not os.path.exists(reac_path):
         raise SystemExit(f"Expected file not found: {reac_path} (from ER step)")
 
-    df = read_csv_any(reac_path)
-    required = ["safetyreportid", "reaction_meddrapt"]
-    for c in required:
-        if c not in df.columns:
-            raise SystemExit(f"reactions.csv.gz must contain '{c}'")
+    # 2) จำกัดให้อยู่ใน baseline (ถ้ามี) และสตรีม reactions เป็น chunks เพื่อประหยัดหน่วยความจำ
+    required_cols = ["safetyreportid", "reaction_meddrapt"]
+    # เตรียม index ของ SIDs จาก baseline โดยใช้ sqlite เพื่อลดหน่วยความจำ
+    sid_db = None
+    sid_conn = None
+    if base_csv and os.path.exists(base_csv):
+        sid_db = os.path.join(out_dir, "adr_sid_index.sqlite")
+        if os.path.exists(sid_db):
+            os.remove(sid_db)
+        sid_conn = sqlite3.connect(sid_db)
+        cur = sid_conn.cursor()
+        cur.execute("CREATE TABLE sids (sid TEXT PRIMARY KEY)")
+        # อ่าน baseline เป็นก้อนเฉพาะคอลัมน์ safetyreportid
+        for ch in pd.read_csv(base_csv, usecols=["safetyreportid"], chunksize=2_000_000, low_memory=False):
+            ch["safetyreportid"] = ch["safetyreportid"].map(to_str_sid)
+            vals = [(str(x),) for x in ch["safetyreportid"].dropna().astype(str).unique().tolist()]
+            cur.executemany("INSERT OR IGNORE INTO sids(sid) VALUES(?)", vals)
+        sid_conn.commit()
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_sid ON sids(sid)")
+        sid_conn.commit()
 
-    df["safetyreportid"] = df["safetyreportid"].map(to_str_sid)
+    # 3) stream สร้าง adr_map.csv.gz และ adr_dict.csv.gz
+    map_path = os.path.join(out_dir, "adr_map.csv.gz")
+    wrote_header = False
+    dict_map = {}
+    total_rows = 0
 
-    # 2) จำกัดให้อยู่ใน baseline (ถ้ามี)
-    if base_csv:
-        base = read_csv_any(base_csv)
-        keep = set(base["safetyreportid"].map(to_str_sid).dropna().astype(str))
-        df = df[df["safetyreportid"].isin(keep)]
+    with gzip.open(map_path, mode="wt", encoding="utf-8") as gz:
+        # ตรวจคอลัมน์ reactions เพื่อประกอบ usecols
+        hdr = pd.read_csv(reac_path, nrows=0)
+        cols = list(hdr.columns)
+        usecols = [c for c in required_cols + ["reaction_outcome"] if c in cols]
+        if not set(required_cols).issubset(set(usecols)):
+            missing = set(required_cols) - set(usecols)
+            raise SystemExit(f"reactions.csv.gz missing columns: {missing}")
 
-    # 3) สร้าง map และ dict
-    cols_keep = ["safetyreportid", "reaction_meddrapt"]
-    if "reaction_outcome" in df.columns:
-        cols_keep.append("reaction_outcome")
+        for ch in pd.read_csv(reac_path, usecols=usecols, chunksize=1_000_000, low_memory=False):
+            ch["safetyreportid"] = ch["safetyreportid"].map(to_str_sid)
+            ch = ch.dropna(subset=["safetyreportid","reaction_meddrapt"]) 
+            if sid_conn is not None:
+                # ดึง set ของ sid ที่มีใน chunk นี้จาก sqlite เพื่อลดจำนวน
+                uniq = ch["safetyreportid"].astype(str).unique().tolist()
+                # แบ่งเป็นชุดย่อยเพื่อลด place holders
+                keep_sids = set()
+                cur = sid_conn.cursor()
+                step = 50_000
+                for i in range(0, len(uniq), step):
+                    sub = uniq[i:i+step]
+                    qmarks = ",".join(["?"]*len(sub))
+                    cur.execute(f"SELECT sid FROM sids WHERE sid IN ({qmarks})", sub)
+                    keep_sids.update([r[0] for r in cur.fetchall()])
+                if keep_sids:
+                    ch = ch[ch["safetyreportid"].isin(keep_sids)]
+                else:
+                    continue
 
-    adr_map = df[cols_keep].dropna(subset=["reaction_meddrapt"]).copy()
-    if dedup:
-        adr_map = adr_map.drop_duplicates(subset=["safetyreportid", "reaction_meddrapt"])
+            if ch.empty:
+                continue
+            # drop duplicates ภายใน chunk เพื่อลดปริมาณ
+            if dedup:
+                ch = ch.drop_duplicates(subset=["safetyreportid","reaction_meddrapt"]) 
+            # reaction_key
+            ch["reaction_key"] = ch["reaction_meddrapt"].map(slug_key)
+            # อัปเดต dict_map
+            for v in ch["reaction_meddrapt"].dropna().astype(str).unique():
+                if v not in dict_map:
+                    dict_map[v] = slug_key(v)
+            # เขียนต่อท้ายไฟล์ map
+            ch.to_csv(gz, index=False, header=not wrote_header)
+            wrote_header = True
+            total_rows += len(ch)
 
-    adr_map["reaction_key"] = adr_map["reaction_meddrapt"].map(slug_key)
-    adr_dict = adr_map[["reaction_meddrapt", "reaction_key"]].drop_duplicates()
-
-    # 4) เขียนผลลัพธ์
-    write_csv_gz(adr_map,  os.path.join(out_dir, "adr_map.csv.gz"))
+    # เขียน adr_dict จาก dict_map
+    adr_dict = pd.DataFrame({
+        "reaction_meddrapt": list(dict_map.keys()),
+        "reaction_key": list(dict_map.values())
+    })
     write_csv_gz(adr_dict, os.path.join(out_dir, "adr_dict.csv.gz"))
     dump_json(
         {
             "source": os.path.relpath(reac_path, er_root),
-            "rows": {"adr_map": int(len(adr_map)), "adr_dict": int(len(adr_dict))}
+            "rows": {"adr_map": int(total_rows), "adr_dict": int(len(adr_dict))}
         },
         os.path.join(out_dir, "adr_split_stats.json")
     )

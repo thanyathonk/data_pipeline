@@ -1,14 +1,31 @@
 import os, time, json, argparse, random, pandas as pd, pickle, shutil
+import builtins, sys
+
+# Make print ASCII-only to avoid Windows console encoding errors
+_orig_print = builtins.print
+def _safe_print(*args, **kwargs):
+    try:
+        s = " ".join(str(a) for a in args)
+        _orig_print(s, **kwargs)
+    except Exception:
+        try:
+            s2 = s.encode("ascii", "ignore").decode("ascii")
+            _orig_print(s2, **kwargs)
+        except Exception:
+            _orig_print(repr(s), **kwargs)
+builtins.print = _safe_print
 from urllib.parse import quote_plus
 try:
     from selenium.webdriver.common.by import By
     from selenium.webdriver.support.ui import WebDriverWait
     from selenium.webdriver.support import expected_conditions as EC
+    from selenium import webdriver
+    from selenium.webdriver.chrome.options import Options as SeleniumChromeOptions
     import undetected_chromedriver as uc
     HAVE_SELENIUM = True
 except Exception:
     # Selenium stack not available in demo/testing environments
-    By = WebDriverWait = EC = uc = None  # type: ignore
+    By = WebDriverWait = EC = uc = webdriver = SeleniumChromeOptions = None  # type: ignore
     HAVE_SELENIUM = False
 from threading import Lock
 from datetime import datetime
@@ -47,9 +64,9 @@ class ProductionScraper:
         self.cache = self.load_cache()
         self.progress = self.load_progress()
 
-        print(f"🚀 Production DrugBank Scraper Initialized")
-        print(f"📁 Cache: {len(self.cache)} entries")
-        print(f"📊 Progress: Batch {self.progress.get('current_batch', 0)}")
+        print("Production DrugBank Scraper Initialized")
+        print(f"Cache: {len(self.cache)} entries")
+        print(f"Progress: Batch {self.progress.get('current_batch', 0)}")
 
     def load_cache(self):
         """Load existing cache"""
@@ -57,10 +74,10 @@ class ProductionScraper:
             if os.path.exists(self.cache_file):
                 with open(self.cache_file, "rb") as f:
                     cache = pickle.load(f)
-                print(f"✅ Loaded cache: {len(cache)} entries")
+                print(f"Loaded cache: {len(cache)} entries")
                 return cache
         except Exception as e:
-            print(f"⚠️  Cache load error: {e}")
+            print(f"Cache load error: {e}")
         return {}
 
     def save_cache(self):
@@ -69,7 +86,7 @@ class ProductionScraper:
             with open(self.cache_file, "wb") as f:
                 pickle.dump(self.cache, f)
         except Exception as e:
-            print(f"❌ Cache save error: {e}")
+            print(f"Cache save error: {e}")
 
     def load_progress(self):
         """Load progress from disk"""
@@ -77,10 +94,10 @@ class ProductionScraper:
             if os.path.exists(self.progress_file):
                 with open(self.progress_file, "r") as f:
                     progress = json.load(f)
-                print(f"✅ Loaded progress: {progress}")
+                print(f"Loaded progress: {progress}")
                 return progress
         except Exception as e:
-            print(f"⚠️  Progress load error: {e}")
+            print(f"Progress load error: {e}")
         return {"current_batch": 0, "completed_ingredients": 0, "total_ingredients": 0}
 
     def save_progress(self, batch_num, completed, total):
@@ -103,7 +120,7 @@ class ProductionScraper:
             with open(self.done_ok, "w") as f:
                 f.write(f"{datetime.now().isoformat()} | {reason}\n")
         except Exception as e:
-            print(f"⚠️  Unable to write done marker: {e}")
+            print(f"Unable to write done marker: {e}")
 
     def log_error(self, ingredient, error_msg):
         """Log errors to file"""
@@ -112,7 +129,7 @@ class ProductionScraper:
                 timestamp = datetime.now().isoformat()
                 f.write(f"{timestamp}: {ingredient} - {error_msg}\n")
         except Exception as e:
-            print(f"❌ Error log failed: {e}")
+            print(f"Error log failed: {e}")
 
     def _resolve_chrome_binary(self) -> str:
         """
@@ -150,59 +167,63 @@ class ProductionScraper:
         if session_ready:
             return True
 
-        print("🔥 Initializing DrugBank session...")
+        print("Initializing DrugBank session (interactive)...")
 
         # Build options freshly in each attempt
 
         last_err = None
-        for attempt in range(1, 4):
+        # Always a single attempt to avoid multiple windows
+        max_attempts = 1
+        for attempt in range(1, max_attempts + 1):
+            # ensure any previous session is cleaned before a new attempt
             try:
-                options = uc.ChromeOptions()
-                options.add_argument("--window-size=1200,900")
-                # Persist profile to retain Cloudflare cookies between runs
-                os.makedirs(self.profile_dir, exist_ok=True)
-                options.add_argument(f"--user-data-dir={self.profile_dir}")
-                # ใช้ non-headless ช่วง init; ถ้าไม่ให้แสดงหน้าต่างให้ย้ายออกนอกจอ
-                if not self.init_visible:
-                    options.add_argument("--window-position=-2000,-2000")
-                options.add_argument("--no-sandbox")
-                options.add_argument("--disable-dev-shm-usage")
-                options.add_argument("--disable-gpu")
-                options.add_argument("--disable-extensions")
-                options.add_argument("--disable-web-security")
-                options.add_argument("--disable-plugins")
-                options.add_argument("--disable-notifications")
-                options.add_argument("--disable-popup-blocking")
-                options.add_argument("--disable-blink-features=AutomationControlled")
-
-                # Additional stability options
-                options.add_argument("--max_old_space_size=4096")
-                options.add_argument("--disable-background-timer-throttling")
-                options.add_argument("--disable-renderer-backgrounding")
-                options.add_argument("--disable-backgrounding-occluded-windows")
-                options.add_argument("--disable-ipc-flooding-protection")
-                options.add_argument("--no-sandbox")
-                options.add_argument("--disable-dev-shm-usage")
-
-                prefs = {
-                    "profile.managed_default_content_settings.images": 2,
-                    "profile.default_content_setting_values.notifications": 2,
-                    "profile.managed_default_content_settings.media_stream": 2,
-                }
-                options.add_experimental_option("prefs", prefs)
-
-                options.add_argument(
-                    "--user-agent=Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
-                )
-                # กำหนด Chrome binary (ต้องมีในเครื่องผู้ใช้)
-                options.binary_location = self._resolve_chrome_binary()
-                # Faster navigation returns; we will wait for elements explicitly
-                try:
-                    options.page_load_strategy = "eager"
-                except Exception:
-                    pass
-                # ใช้ uc.Chrome (ต้องมี Chrome ติดตั้งไว้แล้ว)
-                session_driver = uc.Chrome(options=options)
+                self.cleanup_session()
+            except Exception:
+                pass
+            try:
+                # Prefer Selenium Chrome for interactive session on Windows
+                if getattr(self, "interactive_init", False):
+                    sopts = SeleniumChromeOptions()
+                    sopts.add_argument("--window-size=1200,900")
+                    if not self.init_visible:
+                        sopts.add_argument("--window-position=-2000,-2000")
+                    sopts.add_argument("--remote-allow-origins=*")
+                    try:
+                        sopts.page_load_strategy = "eager"
+                    except Exception:
+                        pass
+                    session_driver = webdriver.Chrome(options=sopts)
+                else:
+                    options = uc.ChromeOptions()
+                    options.add_argument("--window-size=1200,900")
+                    os.makedirs(self.profile_dir, exist_ok=True)
+                    options.add_argument(f"--user-data-dir={self.profile_dir}")
+                    if not self.init_visible:
+                        options.add_argument("--window-position=-2000,-2000")
+                    options.add_argument("--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome Safari/537.36")
+                    options.add_argument("--remote-allow-origins=*")
+                    options.binary_location = self._resolve_chrome_binary()
+                    try:
+                        options.page_load_strategy = "eager"
+                    except Exception:
+                        pass
+                    # Try undetected_chromedriver
+                    ver_out = None
+                    ver_main = None
+                    try:
+                        import subprocess, re, os as _os
+                        _bin = options.binary_location or _os.getenv("CHROME_BIN")
+                        if _bin and _os.path.exists(_bin):
+                            ver_out = subprocess.check_output([_bin, "--version"], stderr=subprocess.STDOUT, text=True, timeout=10)
+                            m = re.search(r"(\d+)\.(\d+)\.(\d+)\.(\d+)", ver_out or "")
+                            ver_main = int(m.group(1)) if m else None
+                    except Exception:
+                        ver_main = None
+                    if isinstance(ver_main, int) and ver_main > 0:
+                        session_driver = uc.Chrome(options=options, version_main=ver_main, use_subprocess=True)
+                    else:
+                        session_driver = uc.Chrome(options=options, use_subprocess=True)
+                
 
                 # Set timeouts for better stability
                 session_driver.implicitly_wait(1)
@@ -224,31 +245,29 @@ class ProductionScraper:
                         break
                     except Exception as nav_err:
                         nav_attempts += 1
-                        print(f"⚠️  Navigation attempt {nav_attempts} failed: {nav_err}")
+                        print(f"Navigation attempt {nav_attempts} failed: {nav_err}")
                         if nav_attempts >= 3:
                             raise
                         time.sleep(3)
 
                 # Optional interactive pause to allow manual Cloudflare verification
                 if getattr(self, "interactive_init", False):
-                    print("👋 Interactive init: Chrome window should be visible.")
+                    print("Interactive init: Chrome window should be visible.")
                     print(
                         "   Please complete any Cloudflare/human verification until search results show,"
                     )
                     print(
-                        "   then return to this terminal and press Enter to continue…"
+                        "   then return to this terminal and press Enter to continue..."
                     )
                     try:
-                        input("   Press Enter to continue once ready … ")
+                        input("   Press Enter to continue once ready... ")
                     except Exception:
                         # If no TTY available, continue without blocking
-                        print(
-                            "   (No interactive TTY detected; continuing without pause)"
-                        )
+                        print("   (No interactive TTY detected; continuing without pause)")
 
                 start_time = time.time()
                 last_heartbeat = start_time
-                while time.time() - start_time < 90:
+                while time.time() - start_time < 180:
                     try:
                         # รอให้ลิงก์ผลลัพธ์ปรากฏยืนยันว่า session พร้อม
                         _ = WebDriverWait(session_driver, 5).until(
@@ -258,16 +277,16 @@ class ProductionScraper:
                         )
                         session_ready = True
                         bypass_time = time.time() - start_time
-                        print(f"✅ Session ready in {bypass_time:.1f}s")
+                        print(f"Session ready in {bypass_time:.1f}s")
                         return True
                     except Exception:
                         now = time.time()
                         if now - last_heartbeat >= 10:
-                            print("   …still waiting for search results…")
+                            print("   ...still waiting for search results...")
                             last_heartbeat = now
                         time.sleep(1)
 
-                print("❌ Session initialization failed (timeout)")
+                print("Session initialization failed (timeout)")
                 # Clean up this driver and retry fresh
                 try:
                     session_driver.quit()
@@ -276,7 +295,7 @@ class ProductionScraper:
                 session_driver = None
                 last_err = TimeoutError("Init timeout waiting for search box")
             except Exception as e:
-                print(f"❌ Session error (attempt {attempt}/3): {e}")
+                print(f"Session error (attempt {attempt}/{max_attempts}): {e}")
                 last_err = e
                 # Clean up before next retry
                 try:
@@ -287,7 +306,7 @@ class ProductionScraper:
                 session_driver = None
                 time.sleep(5)
 
-        print(f"❌ Failed to initialize session after retries: {last_err}")
+        print(f"Failed to initialize session after retries: {last_err}")
         return False
 
     def is_session_valid(self):
@@ -336,16 +355,13 @@ class ProductionScraper:
 
         retries = 0
         while retries < MAX_RETRIES:
-            # Check if session is still valid, if not reinitialize
+            # In batch flow, session should be initialized once up front
             if not session_ready or not self.is_session_valid():
-                print(f"   🔄 Session invalid, reinitializing...")
-                self.cleanup_session()
-                if not self.init_session():
-                    return {
-                        "ingredient": ingredient,
-                        "status": "failed",
-                        "error": "Session initialization failed",
-                    }
+                return {
+                    "ingredient": ingredient,
+                    "status": "failed",
+                    "error": "Session not ready",
+                }
             try:
                 # Fast search: go directly to search results page (skips home typing)
                 search_url = f"https://go.drugbank.com/unearth/q?query={quote_plus(ingredient)}&searcher=drugs"
@@ -403,36 +419,114 @@ class ProductionScraper:
                 except:
                     pass
 
-                # Extract fields with individual XPath queries
-                field_xpaths = {
-                    "drugbank_id": "//dt[contains(text(),'DrugBank ID')]/following-sibling::dd",
-                    "drugbank_accession_number": "//dt[contains(text(),'DrugBank Accession Number')]/following-sibling::dd",
-                    "modality": "//dt[contains(text(),'Modality')]/following-sibling::dd",
-                    "us_approved": "//dt[contains(text(),'US Approved')]/following-sibling::dd",
-                    "other_approved": "//dt[contains(text(),'Other Approved')]/following-sibling::dd",
-                    "chemical_formula": "//dt[contains(text(),'Chemical Formula')]/following-sibling::dd",
-                    "unii": "//dt[contains(text(),'UNII')]/following-sibling::dd",
-                    "cas_number": "//dt[contains(text(),'CAS')]/following-sibling::dd",
-                    "inchi_key": "//dt[contains(text(),'InChI Key')]/following-sibling::dd",
-                    "inchi": "//dt[text()='InChI']/following-sibling::dd",
-                    "iupac_name": "//dt[contains(text(),'IUPAC')]/following-sibling::dd",
-                    "smiles": "//dt[contains(text(),'SMILES')]/following-sibling::dd",
+                # -------- helpers for dt/dd extraction --------
+                def _text_join(el):
+                    try:
+                        txt = el.text.strip()
+                    except Exception:
+                        return ""
+                    parts = [t.strip() for t in txt.splitlines() if t.strip()]
+                    return " | ".join(dict.fromkeys(parts))
+
+                def _find_dd(label_frag):
+                    xpath_ci = (
+                        "//dt[contains(translate(normalize-space(text()), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), "
+                        f"'{label_frag.lower()}')]/following-sibling::dd[1]"
+                    )
+                    try:
+                        return session_driver.find_element(By.XPATH, xpath_ci)
+                    except Exception:
+                        return None
+
+                # -------- primary details via dt/dd labels --------
+                label_map = {
+                    "drugbank_id": ["DrugBank Accession Number", "DrugBank ID"],
+                    "modality": ["Modality", "Type"],
+                    "us_approved": ["US Approved"],
+                    "other_approved": ["Other Approved"],
+                    "chemical_formula": ["Chemical Formula"],
+                    "unii": ["UNII"],
+                    "cas_number": ["CAS"],
+                    "inchi_key": ["InChI Key"],
+                    "inchi": ["InChI"],
+                    "iupac_name": ["IUPAC"],
+                    "smiles": ["SMILES"],
+                    # Clinical/PK
+                    "groups": ["Groups"],
+                    "indication": ["Indication"],
+                    "pharmacodynamics": ["Pharmacodynamics"],
+                    "mechanism_of_action": ["Mechanism of action", "Mechanism Of Action"],
+                    "absorption": ["Absorption"],
+                    "metabolism": ["Metabolism"],
+                    "half_life": ["Half life", "Half-life"],
+                    "protein_binding": ["Protein binding", "Protein Binding"],
+                    "volume_of_distribution": ["Volume of distribution", "Volume Of Distribution"],
+                    "clearance": ["Clearance"],
+                    "route_of_elimination": ["Route of elimination", "Route Of Elimination"],
                 }
 
-                for field, xpath in field_xpaths.items():
-                    try:
-                        element = session_driver.find_element(By.XPATH, xpath)
+                def _sanitize(val: str) -> str:
+                    if not isinstance(val, str):
+                        return val
+                    junk_phrases = [
+                        "Build, train, & validate predictive machine-learning models with structured datasets.",
+                        "SEE HOW",
+                    ]
+                    out = val
+                    for j in junk_phrases:
+                        out = out.replace(j, "")
+                    # collapse multiple separators/spaces
+                    out = " | ".join([p.strip() for p in out.split("|") if p.strip()]) if "|" in out else out
+                    out = " ".join(out.split())
+                    return out.strip()
 
-                        if result["drugbank_id"] is None:
-                            db_num = session_driver.find_element(
-                                By.XPATH,
-                                "//dt[contains(text(),'DrugBank Accession Number')]/following-sibling::dd",
-                            )
-                            result["drugbank_id"] = db_num.text.strip()
+                for field, labels in label_map.items():
+                    for lbl in labels:
+                        el = _find_dd(lbl)
+                        if el:
+                            result[field] = _sanitize(_text_join(el))
+                            break
 
-                        result[field] = element.text.strip()
-                    except Exception:
-                        pass
+                # Additional list-type sections (Synonyms, Brands, ATC)
+                def _collect_list_by_header(header_text):
+                    for tag in ("h2", "h3"):
+                        try:
+                            hdr = session_driver.find_element(By.XPATH, f"//{tag}[contains(., '{header_text}')]")
+                        except Exception:
+                            continue
+                        # UL list
+                        try:
+                            ul = hdr.find_element(By.XPATH, "following::ul[1]")
+                            items = [li.text.strip() for li in ul.find_elements(By.TAG_NAME, "li") if li.text.strip()]
+                            if items:
+                                return " | ".join(dict.fromkeys(items))
+                        except Exception:
+                            pass
+                        # Table links
+                        try:
+                            tbl = hdr.find_element(By.XPATH, "following::table[1]")
+                            links = [a.text.strip() for a in tbl.find_elements(By.TAG_NAME, "a") if a.text.strip()]
+                            if links:
+                                return " | ".join(dict.fromkeys(links))
+                        except Exception:
+                            pass
+                    return ""
+
+                v = _collect_list_by_header("Synonyms")
+                if v:
+                    result["synonyms"] = _sanitize(v)
+                v = _collect_list_by_header("Brand Names")
+                if v:
+                    result["brand_names"] = _sanitize(v)
+                v = _collect_list_by_header("ATC Codes")
+                if v:
+                    result["atc_codes"] = _sanitize(v)
+
+                # Ensure we have primary ID
+                if not result.get("drugbank_id"):
+                    el_id = _find_dd("DrugBank Accession Number") or _find_dd("DrugBank ID")
+                    if el_id:
+                        result["drugbank_id"] = _sanitize(_text_join(el_id))
 
                 # Weight data
                 try:
@@ -517,31 +611,35 @@ class ProductionScraper:
         self, ingredients_batch, batch_num, total_batches, total_ingredients=None
     ):
         """Process a batch of ingredients"""
-        print(
-            f"\n📦 Batch {batch_num}/{total_batches} ({len(ingredients_batch)} ingredients)"
-        )
+        print(f"\nBatch {batch_num}/{total_batches} ({len(ingredients_batch)} ingredients)")
+
+        # Ensure a single interactive session is created before the batch
+        if not session_ready or not self.is_session_valid():
+            ok = self.init_session()
+            if not ok:
+                print("Failed to initialize a browser session; skipping batch")
+                return []
 
         batch_results = []
         start_time = time.time()
 
         for i, ingredient in enumerate(ingredients_batch):
-            print(f"   🔍 {i + 1}/{len(ingredients_batch)}: {ingredient}")
+            print(f"   Item {i + 1}/{len(ingredients_batch)}: {ingredient}")
 
             result = self.extract_drugbank_data(ingredient)
             if result:
                 batch_results.append(result)
 
-                status = "✅" if result.get("status") == "success" else "❌"
+                status = "OK" if result.get("status") == "success" else "ERR"
                 drugbank_id = result.get("drugbank_id", "")
                 modality = result.get("modality", "")
-                print(f"      {status} {drugbank_id}")
-                print(f"      {status} {modality}")
+                print(f"      {status} id={drugbank_id} modality={modality}")
 
             # Periodic in-batch checkpoint to avoid data loss on long runs
             if (i + 1) % ITEM_CHECKPOINT_EVERY == 0:
                 try:
                     self.save_cache()
-                    print(f"      💾 In-batch checkpoint at item {i + 1}")
+                    print(f"      checkpoint at item {i + 1}")
                     if total_ingredients is not None:
                         # Update progress file to reflect latest completion count
                         self.save_progress(
@@ -554,7 +652,7 @@ class ProductionScraper:
         batch_time = end_time - start_time
         avg_time = batch_time / len(ingredients_batch) if ingredients_batch else 0
 
-        print(f"   ⏱️  Batch time: {batch_time:.1f}s (avg: {avg_time:.1f}s/drug)")
+        print(f"   Batch time: {batch_time:.1f}s (avg: {avg_time:.1f}s/drug)")
 
         return batch_results
 
@@ -684,6 +782,234 @@ class ProductionScraper:
                 except Exception:
                     pass
 
+    # -------- Parallel sessions runner (multiple windows) --------
+    def _new_driver(self, worker_id: int, use_profile=False):
+        opts = SeleniumChromeOptions()
+        opts.add_argument("--window-size=1200,900")
+        if not self.init_visible:
+            opts.add_argument("--window-position=-2000,-2000")
+        opts.add_argument("--remote-allow-origins=*")
+        if use_profile:
+            pdir = os.path.join(OUTPUT_DIR, f"chrome_profile_{worker_id}")
+            os.makedirs(pdir, exist_ok=True)
+            opts.add_argument(f"--user-data-dir={pdir}")
+        try:
+            opts.page_load_strategy = "eager"
+        except Exception:
+            pass
+        drv = webdriver.Chrome(options=opts)
+        try:
+            drv.implicitly_wait(1)
+            drv.set_page_load_timeout(90)
+            drv.set_script_timeout(60)
+        except Exception:
+            pass
+        return drv
+
+    def _extract_with_driver(self, driver, ingredient: str):
+        search_url = f"https://go.drugbank.com/unearth/q?query={quote_plus(ingredient)}&searcher=drugs"
+        driver.get(search_url)
+        cur = driver.current_url
+        if "/drugs/DB" not in cur:
+            try:
+                first_link = WebDriverWait(driver, 8).until(
+                    EC.element_to_be_clickable((By.CSS_SELECTOR, "a[href^='/drugs/']"))
+                )
+                driver.execute_script("arguments[0].click();", first_link)
+                time.sleep(0.3)
+            except Exception:
+                links = driver.find_elements(By.CSS_SELECTOR, "a[href^='/drugs/']")
+                if not links:
+                    return {"ingredient": ingredient, "status": "no_results"}
+                else:
+                    raise
+
+        result = {
+            "ingredient": ingredient,
+            "status": "success",
+            "actual_drug_name": "",
+            "drugbank_id": "",
+            "modality": "",
+            "us_approved": "",
+            "other_approved": "",
+            "chemical_formula": "",
+            "unii": "",
+            "cas_number": "",
+            "inchi_key": "",
+            "inchi": "",
+            "iupac_name": "",
+            "smiles": "",
+            "average_weight": "",
+            "monoisotopic_weight": "",
+        }
+
+        try:
+            h1 = driver.find_element(By.TAG_NAME, "h1")
+            result["actual_drug_name"] = h1.text.strip()
+        except Exception:
+            pass
+
+        def _text_join(el):
+            try:
+                txt = el.text.strip()
+            except Exception:
+                return ""
+            parts = [t.strip() for t in txt.splitlines() if t.strip()]
+            return " | ".join(dict.fromkeys(parts))
+
+        def _find_dd(label_frag):
+            xpath_ci = (
+                "//dt[contains(translate(normalize-space(text()), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), "
+                f"'{label_frag.lower()}')]/following-sibling::dd[1]"
+            )
+            try:
+                return driver.find_element(By.XPATH, xpath_ci)
+            except Exception:
+                return None
+
+        def _sanitize(val: str) -> str:
+            if not isinstance(val, str):
+                return val
+            junk_phrases = [
+                "Build, train, & validate predictive machine-learning models with structured datasets.",
+                "SEE HOW",
+            ]
+            out = val
+            for j in junk_phrases:
+                out = out.replace(j, "")
+            out = " | ".join([p.strip() for p in out.split("|") if p.strip()]) if "|" in out else out
+            out = " ".join(out.split())
+            return out.strip()
+
+        label_map = {
+            "drugbank_id": ["DrugBank Accession Number", "DrugBank ID"],
+            "modality": ["Modality", "Type"],
+            "us_approved": ["US Approved"],
+            "other_approved": ["Other Approved"],
+            "chemical_formula": ["Chemical Formula"],
+            "unii": ["UNII"],
+            "cas_number": ["CAS"],
+            "inchi_key": ["InChI Key"],
+            "inchi": ["InChI"],
+            "iupac_name": ["IUPAC"],
+            "smiles": ["SMILES"],
+            "groups": ["Groups"],
+            "indication": ["Indication"],
+            "pharmacodynamics": ["Pharmacodynamics"],
+            "mechanism_of_action": ["Mechanism of action", "Mechanism Of Action"],
+            "absorption": ["Absorption"],
+            "metabolism": ["Metabolism"],
+            "half_life": ["Half life", "Half-life"],
+            "protein_binding": ["Protein binding", "Protein Binding"],
+            "volume_of_distribution": ["Volume of distribution", "Volume Of Distribution"],
+            "clearance": ["Clearance"],
+            "route_of_elimination": ["Route of elimination", "Route Of Elimination"],
+        }
+        for field, labels in label_map.items():
+            for lbl in labels:
+                el = _find_dd(lbl)
+                if el:
+                    result[field] = _sanitize(_text_join(el))
+                    break
+
+        def _collect_list_by_header(header_text):
+            for tag in ("h2", "h3"):
+                try:
+                    hdr = driver.find_element(By.XPATH, f"//{tag}[contains(., '{header_text}')]")
+                except Exception:
+                    continue
+                try:
+                    ul = hdr.find_element(By.XPATH, "following::ul[1]")
+                    items = [li.text.strip() for li in ul.find_elements(By.TAG_NAME, "li") if li.text.strip()]
+                    if items:
+                        return " | ".join(dict.fromkeys(items))
+                except Exception:
+                    pass
+                try:
+                    tbl = hdr.find_element(By.XPATH, "following::table[1]")
+                    links = [a.text.strip() for a in tbl.find_elements(By.TAG_NAME, "a") if a.text.strip()]
+                    if links:
+                        return " | ".join(dict.fromkeys(links))
+                except Exception:
+                    pass
+            return ""
+        for name, header in (("synonyms", "Synonyms"), ("brand_names", "Brand Names"), ("atc_codes", "ATC Codes")):
+            v = _collect_list_by_header(header)
+            if v:
+                result[name] = _sanitize(v)
+        if not result.get("drugbank_id"):
+            el_id = _find_dd("DrugBank Accession Number") or _find_dd("DrugBank ID")
+            if el_id:
+                result["drugbank_id"] = _sanitize(_text_join(el_id))
+        return result
+
+    def run_parallel(self, sessions: int = 4):
+        print(f"\nStarting parallel scraping with {sessions} sessions")
+        df = pd.read_csv(INPUT_FILE)
+        col = getattr(self, "target_col", None)
+        if not col:
+            col = "ingredients" if "ingredients" in df.columns else ("INN" if "INN" in df.columns else None)
+        if not col:
+            raise SystemExit("Input CSV must contain 'ingredients' or 'INN' column (or specify --ingredient-col)")
+        df = df.dropna(subset=[col])
+        df[col] = df[col].astype(str)
+        df = df[df[col] != "nan"]
+        unique_ingredients = df[col].unique().tolist()
+        todo = [ing for ing in unique_ingredients if ing not in self.cache]
+        print(f"Total unique: {len(unique_ingredients)}, remaining: {len(todo)}")
+        if not todo:
+            print("Nothing to do")
+            return
+
+        parts = [todo[i::sessions] for i in range(sessions)]
+        from concurrent.futures import ThreadPoolExecutor
+        def worker(idx: int, items: list):
+            print(f"Worker-{idx}: {len(items)} items")
+            drv = None
+            try:
+                drv = self._new_driver(idx)
+                try:
+                    drv.get("https://go.drugbank.com/")
+                except Exception:
+                    pass
+                for k, ing in enumerate(items, 1):
+                    if ing in self.cache:
+                        continue
+                    try:
+                        res = self._extract_with_driver(drv, ing)
+                    except Exception as e:
+                        try:
+                            if drv:
+                                drv.quit()
+                        except Exception:
+                            pass
+                        drv = self._new_driver(idx)
+                        try:
+                            res = self._extract_with_driver(drv, ing)
+                        except Exception as e2:
+                            res = {"ingredient": ing, "status": "failed", "error": str(e2)}
+                    with results_lock:
+                        self.cache[ing] = res
+                    if k % ITEM_CHECKPOINT_EVERY == 0:
+                        self.save_cache()
+            finally:
+                try:
+                    if drv:
+                        drv.quit()
+                except Exception:
+                    pass
+
+        with ThreadPoolExecutor(max_workers=sessions) as ex:
+            futs = [ex.submit(worker, i, part) for i, part in enumerate(parts)]
+            for f in futs:
+                f.result()
+
+        self.save_cache()
+        if self.cache:
+            final_df = pd.DataFrame(list(self.cache.values()))
+            final_df.to_csv(self.results_file, index=False)
+            print(f"Parallel results saved: {self.results_file} rows={len(final_df)}")
+
 
 def main():
     global MAX_BATCHES, BATCH_SIZE, PROFILE_DIR, INTERACTIVE_INIT, INIT_VISIBLE, OUTPUT_DIR, CACHE_DIR, INPUT_FILE
@@ -701,6 +1027,8 @@ def main():
     parser.add_argument("--output-dir", type=str, default=None)
     parser.add_argument("--chrome-binary", type=str, default=None,
                         help="Path to Chrome/Chromium binary (or set CHROME_BIN env)")
+    parser.add_argument("--sessions", type=int, default=1,
+                        help="Number of parallel browser sessions (windows) to use")
     parser.add_argument("--demo", action="store_true", help="Run in demo mode (no browser); synthesize DrugBank IDs for sample testing")
     args = parser.parse_args()
 
@@ -759,7 +1087,7 @@ def main():
     if args.chrome_binary:
         scraper.chrome_binary = args.chrome_binary
     scraper.target_col = args.ingredient_col  # may be None -> auto
-    scraper.run()
+    scraper.run_parallel(args.sessions) if (args.sessions and args.sessions > 1) else scraper.run()
 
 if __name__ == "__main__":
     main()
