@@ -84,13 +84,18 @@ python scripts/fetch_openfda_data.py \
 - หากใช้ลิงก์ Google Drive ควรเปิดแชร์ไฟล์ (Anyone with the link) หรือใช้ลิงก์ที่รองรับ gdown
 - เมื่อแตกไฟล์แล้ว หากใน `data/openFDA_drug_event/` มี `er_tables/` ครบ สามารถข้าม Stage‑1/2 และรัน Stage‑3 → 10 ได้ทันที
 
-## 3) เตรียมสภาพแวดล้อม
+## 3) รัน Pipeline แบบรวดเร็ว (Quickstart)
+- macOS/Linux: `scripts/run_pipeline.sh`
+- Windows: `scripts\run_pipeline.bat`
+
+ทั้งสองสคริปต์จะสร้างหรือเปิด env `pipeline` จาก `environment.yml`, ล้างไฟล์ชั่วคราว และรัน `run_pipeline.py` ให้โดยอัตโนมัติ
+
+## 4) เตรียมสภาพแวดล้อมแบบ manual
 ```bash
-# สร้าง virtualenv และติดตั้ง dependencies
 bash scripts/setup_env.sh
 source .venv/bin/activate
 ```
 
-## 4) ข้อควรระวัง
+## 5) ข้อควรระวัง
 - อย่า commit ไฟล์ลับใน `credentials/` ขึ้น Git
 - โฟลเดอร์ข้อมูล/ผลลัพธ์ขนาดใหญ่ถูกกันไว้ใน `.gitignore` แล้ว (เช่น `data/`, `data/test_runs/`, `data/release/`)

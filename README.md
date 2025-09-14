@@ -23,24 +23,15 @@ Stages (as orchestrated by `run_pipeline.py`)
 - ER/merge helpers: `core/*.py`, `merge/common_utils.py`
 - Split/Enrich/QA/Release: `split/*.py`, `enrich/*.py`, `stage*.py`
 - Driver: `run_pipeline.py` (all stages), `run_pipeline_validation.py` (sample run)
-- Windows helper: `scripts/run_pipeline_cmd.bat` (conda env + cleanup + run)
+- Quickstart helpers: `scripts/run_pipeline.sh` (macOS/Linux) and `scripts/run_pipeline.bat` (Windows)
 
 ## Requirements
 - Python 3.10+
-- Recommended: a Conda environment named `pipeline` with packages from `requirements.txt`.
+- Recommended: Conda. Create the `pipeline` environment from `environment.yml`:
 
-Conda on Windows (recommended)
-```cmd
-conda create -n pipeline python=3.11 -y
-conda activate pipeline
-pip install -r requirements.txt
-```
-
-POSIX venv
 ```bash
-bash scripts/setup_env.sh
-source .venv/bin/activate
-pip install -r requirements.txt
+conda env create -f environment.yml
+conda activate pipeline
 ```
 
 ### OMOP Vocabulary
@@ -71,15 +62,15 @@ Useful flags
 - `--force`              : Force re-run of stages even if outputs exist (see fallback below)
 - `--demo-rxnav`         : Offline/demo RxNorm mapping (no network, standard library only)
 
-Windows (Conda) quick run
-```cmd
-scripts\run_pipeline_cmd.bat
+Quick run
+```bash
+# macOS / Linux
+scripts/run_pipeline.sh
+
+# Windows
+scripts\run_pipeline.bat
 ```
-This script:
-- activates the `pipeline` conda env,
-- deletes large temporary indexes (e.g., `data\split\*_sid_index.sqlite`) and old logs/steps,
-- installs requirements (best-effort),
-- runs `run_pipeline.py`.
+These scripts create/activate the `pipeline` conda env, clean temporary files, and run `run_pipeline.py`.
 
 ## Outputs (key files)
 - `data/baseline/patients_report_serious_reporter.csv.gz`        : Baseline (Stage 3)

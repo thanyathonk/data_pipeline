@@ -18,6 +18,13 @@ exit /b 1
 :found
 echo [INFO] Using conda: %CONDA_BAT%
 
+rem ---- Create env if missing ----
+call "%CONDA_BAT%" env list | findstr /R "^pipeline\s" >nul 2>&1
+if errorlevel 1 (
+  echo [INFO] Creating conda env 'pipeline' from environment.yml ...
+  call "%CONDA_BAT%" env create -f environment.yml || exit /b 1
+)
+
 rem ---- Activate env ----
 call "%CONDA_BAT%" activate pipeline || (
   echo [ERROR] Failed to activate env 'pipeline'
@@ -36,15 +43,9 @@ if not exist data\logs\steps mkdir data\logs\steps
 echo [CLEAN] Removing cache folders if present ...
 if exist data\.cache rmdir /s /q data\.cache
 
-rem Optional: clear old logs older than 7 days (ignore errors if forfiles not available)
-forfiles /p data\logs /s /m *.* /d -7 /c "cmd /c del /q @path" 2>nul
-
-rem ---- Ensure requirements (best-effort) ----
-python -m pip install -r requirements.txt || echo [WARN] pip install skipped/failed; relying on preinstalled packages
-
 rem ---- Run pipeline (all stages) ----
 echo [RUN] Starting pipeline ...
-python run_pipeline.py --no-confirm -y --qps 4 --max-workers 8 --force
+python run_pipeline.py --no-confirm -y --qps 4 --max-workers 8 %*
 set "EXITCODE=%ERRORLEVEL%"
 
 echo [DONE] Pipeline finished with exit code %EXITCODE%
